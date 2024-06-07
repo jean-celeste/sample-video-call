@@ -37,7 +37,7 @@ joinButton.onclick = joinCall;
 
 async function init() {
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localVideo.srcObject = localStream;
         console.log('Local stream obtained:', localStream);
     } catch (error) {
