@@ -1,5 +1,5 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.0.0/firebase-app.js';
-import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, addDoc, updateDoc } from 'https://www.gstatic.com/firebasejs/9.0.0/firebase-firestore.js';
+import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, addDoc, updateDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/9.0.0/firebase-firestore.js';
 
 // Firebase configuration
 const firebaseConfig = {
@@ -29,6 +29,9 @@ const remoteVideo = document.getElementById('remoteVideo');
 const muteAudioButton = document.getElementById('muteAudioBtn');
 const muteVideoButton = document.getElementById('muteVideoBtn');
 const endCallButton = document.getElementById('endCallBtn');
+const chatBox = document.getElementById('chatBox');
+const messageInput = document.getElementById('messageInput');
+const sendButton = document.getElementById('sendButton');
 
 let localStream;
 let remoteStream;
@@ -40,6 +43,7 @@ joinButton.onclick = joinCall;
 muteAudioButton.onclick = toggleAudio;
 muteVideoButton.onclick = toggleVideo;
 endCallButton.onclick = endCall;
+sendButton.onclick = sendMessage;
 
 async function init() {
     try {
@@ -52,67 +56,14 @@ async function init() {
     }
 }
 
-// Ensure that the camera is started before any call actions
 window.onload = async () => {
     await init();
 };
 
 async function startCall() {
     try {
-        // Create a new call
         roomId = Math.random().toString(36).substring(2, 15);
-        const callDoc = doc(collection(firestore, 'calls'), roomId);
-        const offerCandidates = collection(callDoc, 'offerCandidates');
-        const answerCandidates = collection(callDoc, 'answerCandidates');
-
-        peerConnection = new RTCPeerConnection(servers);
-
-        // Add local stream tracks to the peer connection
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-        // Handle remote stream
-        peerConnection.ontrack = event => {
-            [remoteStream] = event.streams;
-            console.log('Remote stream received:', remoteStream);
-            remoteVideo.srcObject = remoteStream;
-        };
-
-        // Collect ICE candidates
-        peerConnection.onicecandidate = event => {
-            if (event.candidate) {
-                addDoc(offerCandidates, event.candidate.toJSON());
-            }
-        };
-
-        // Create offer
-        const offerDescription = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offerDescription);
-
-        const offer = {
-            sdp: offerDescription.sdp,
-            type: offerDescription.type
-        };
-        await setDoc(callDoc, { offer });
-
-        // Listen for remote answer
-        onSnapshot(callDoc, snapshot => {
-            const data = snapshot.data();
-            if (!peerConnection.currentRemoteDescription && data?.answer) {
-                const answerDescription = new RTCSessionDescription(data.answer);
-                peerConnection.setRemoteDescription(answerDescription);
-            }
-        });
-
-        // Listen for remote ICE candidates
-        onSnapshot(answerCandidates, snapshot => {
-            snapshot.docChanges().forEach(change => {
-                if (change.type === 'added') {
-                    const candidate = new RTCIceCandidate(change.doc.data());
-                    peerConnection.addIceCandidate(candidate);
-                }
-            });
-        });
-
+        await setupPeerConnection();
         alert(`Call started. Share this ID with the person you want to join: ${roomId}`);
     } catch (error) {
         console.error('Error starting call.', error);
@@ -122,37 +73,44 @@ async function startCall() {
 
 async function joinCall() {
     try {
-        // Join an existing call
         roomId = prompt('Enter the ID of the call you want to join:');
-        const callDoc = doc(collection(firestore, 'calls'), roomId);
-        const offerCandidates = collection(callDoc, 'offerCandidates');
-        const answerCandidates = collection(callDoc, 'answerCandidates');
+        if (!roomId) return;
+        await setupPeerConnection(true);
+    } catch (error) {
+        console.error('Error joining call.', error);
+        alert('Error joining call: ' + error.message);
+    }
+}
 
-        peerConnection = new RTCPeerConnection(servers);
+async function setupPeerConnection(isJoining = false) {
+    const callDoc = doc(collection(firestore, 'calls'), roomId);
+    const offerCandidates = collection(callDoc, 'offerCandidates');
+    const answerCandidates = collection(callDoc, 'answerCandidates');
 
-        // Add local stream tracks to the peer connection
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+    peerConnection = new RTCPeerConnection(servers);
 
-        // Handle remote stream
-        peerConnection.ontrack = event => {
-            [remoteStream] = event.streams;
-            console.log('Remote stream received:', remoteStream);
-            remoteVideo.srcObject = remoteStream;
-        };
+    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-        // Collect ICE candidates
-        peerConnection.onicecandidate = event => {
-            if (event.candidate) {
+    peerConnection.ontrack = event => {
+        [remoteStream] = event.streams;
+        remoteVideo.srcObject = remoteStream;
+    };
+
+    peerConnection.onicecandidate = event => {
+        if (event.candidate) {
+            if (isJoining) {
                 addDoc(answerCandidates, event.candidate.toJSON());
+            } else {
+                addDoc(offerCandidates, event.candidate.toJSON());
             }
-        };
+        }
+    };
 
-        // Get offer
+    if (isJoining) {
         const callData = (await getDoc(callDoc)).data();
         const offerDescription = callData.offer;
         await peerConnection.setRemoteDescription(new RTCSessionDescription(offerDescription));
 
-        // Create answer
         const answerDescription = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answerDescription);
 
@@ -162,7 +120,6 @@ async function joinCall() {
         };
         await updateDoc(callDoc, { answer });
 
-        // Listen for remote ICE candidates
         onSnapshot(offerCandidates, snapshot => {
             snapshot.docChanges().forEach(change => {
                 if (change.type === 'added') {
@@ -171,10 +128,41 @@ async function joinCall() {
                 }
             });
         });
-    } catch (error) {
-        console.error('Error joining call.', error);
-        alert('Error joining call: ' + error.message);
+    } else {
+        const offerDescription = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offerDescription);
+
+        const offer = {
+            sdp: offerDescription.sdp,
+            type: offerDescription.type
+        };
+        await setDoc(callDoc, { offer });
+
+        onSnapshot(callDoc, snapshot => {
+            const data = snapshot.data();
+            if (!peerConnection.currentRemoteDescription && data?.answer) {
+                const answerDescription = new RTCSessionDescription(data.answer);
+                peerConnection.setRemoteDescription(answerDescription);
+            }
+        });
+
+        onSnapshot(answerCandidates, snapshot => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    const candidate = new RTCIceCandidate(change.doc.data());
+                    peerConnection.addIceCandidate(candidate);
+                }
+            });
+        });
     }
+
+    // Listen for new messages
+    onSnapshot(callDoc, (snapshot) => {
+        const data = snapshot.data();
+        if (data && data.messages) {
+            updateChatBox(data.messages);
+        }
+    });
 }
 
 function toggleAudio() {
@@ -213,5 +201,32 @@ async function endCall() {
             console.error('Error deleting room document:', error);
         }
     }
+    chatBox.innerHTML = '';
     alert('Call ended');
+}
+
+async function sendMessage() {
+    if (!roomId) {
+        alert('You must be in a call to send messages.');
+        return;
+    }
+    const message = messageInput.value.trim();
+    if (message) {
+        const callDoc = doc(firestore, 'calls', roomId);
+        const callData = (await getDoc(callDoc)).data();
+        const messages = callData.messages || [];
+        messages.push({ text: message, sender: 'Me', timestamp: new Date().toISOString() });
+        await updateDoc(callDoc, { messages: messages });
+        messageInput.value = '';
+    }
+}
+
+function updateChatBox(messages) {
+    chatBox.innerHTML = '';
+    messages.forEach(msg => {
+        const msgElement = document.createElement('div');
+        msgElement.textContent = `${msg.sender}: ${msg.text}`;
+        chatBox.appendChild(msgElement);
+    });
+    chatBox.scrollTop = chatBox.scrollHeight;
 }
