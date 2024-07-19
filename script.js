@@ -26,12 +26,6 @@ const startButton = document.getElementById('startButton');
 const joinButton = document.getElementById('joinButton');
 const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');
-const muteAudioButton = document.getElementById('muteAudioBtn');
-const muteVideoButton = document.getElementById('muteVideoBtn');
-const endCallButton = document.getElementById('endCallBtn');
-const chatInput = document.getElementById('chatInput');
-const sendMsgButton = document.getElementById('sendMsgBtn');
-const chatMessages = document.getElementById('chatMessages');
 
 let localStream;
 let remoteStream;
@@ -40,11 +34,6 @@ let roomId;
 
 startButton.onclick = startCall;
 joinButton.onclick = joinCall;
-muteAudioButton.onclick = toggleAudio;
-muteVideoButton.onclick = toggleVideo;
-endCallButton.onclick = endCall;
-sendMsgButton.onclick = sendMessage;
-
 
 async function init() {
     try {
@@ -64,73 +53,32 @@ window.onload = async () => {
 
 async function startCall() {
     try {
+        // Create a new call
         roomId = Math.random().toString(36).substring(2, 15);
-        await setupPeerConnection();
-        alert(`Call started. Share this ID with the person you want to join: ${roomId}`);
-    } catch (error) {
-        console.error('Error starting call.', error);
-        alert('Error starting call. Please try again.');
-    }
-}
+        const callDoc = doc(collection(firestore, 'calls'), roomId);
+        const offerCandidates = collection(callDoc, 'offerCandidates');
+        const answerCandidates = collection(callDoc, 'answerCandidates');
 
-async function joinCall() {
-    try {
-        roomId = prompt('Enter the ID of the call you want to join:');
-        if (!roomId) return;
-        await setupPeerConnection(true);
-    } catch (error) {
-        console.error('Error joining call.', error);
-        alert('Error joining call. Please check the room ID and try again.');
-    }
-}
+        peerConnection = new RTCPeerConnection(servers);
 
-async function setupPeerConnection(isJoining = false) {
-    const callDoc = doc(collection(firestore, 'calls'), roomId);
-    const offerCandidates = collection(callDoc, 'offerCandidates');
-    const answerCandidates = collection(callDoc, 'answerCandidates');
+        // Add local stream tracks to the peer connection
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-    peerConnection = new RTCPeerConnection(servers);
+        // Handle remote stream
+        peerConnection.ontrack = event => {
+            [remoteStream] = event.streams;
+            console.log('Remote stream received:', remoteStream);
+            remoteVideo.srcObject = remoteStream;
+        };
 
-    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-    peerConnection.ontrack = event => {
-        [remoteStream] = event.streams;
-        remoteVideo.srcObject = remoteStream;
-    };
-
-    peerConnection.onicecandidate = event => {
-        if (event.candidate) {
-            if (isJoining) {
-                addDoc(answerCandidates, event.candidate.toJSON());
-            } else {
+        // Collect ICE candidates
+        peerConnection.onicecandidate = event => {
+            if (event.candidate) {
                 addDoc(offerCandidates, event.candidate.toJSON());
             }
-        }
-    };
-
-    if (isJoining) {
-        const callData = (await getDoc(callDoc)).data();
-        const offerDescription = callData.offer;
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(offerDescription));
-
-        const answerDescription = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answerDescription);
-
-        const answer = {
-            sdp: answerDescription.sdp,
-            type: answerDescription.type
         };
-        await updateDoc(callDoc, { answer });
 
-        onSnapshot(offerCandidates, snapshot => {
-            snapshot.docChanges().forEach(change => {
-                if (change.type === 'added') {
-                    const candidate = new RTCIceCandidate(change.doc.data());
-                    peerConnection.addIceCandidate(candidate);
-                }
-            });
-        });
-    } else {
+        // Create offer
         const offerDescription = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offerDescription);
 
@@ -140,6 +88,7 @@ async function setupPeerConnection(isJoining = false) {
         };
         await setDoc(callDoc, { offer });
 
+        // Listen for remote answer
         onSnapshot(callDoc, snapshot => {
             const data = snapshot.data();
             if (!peerConnection.currentRemoteDescription && data?.answer) {
@@ -148,6 +97,7 @@ async function setupPeerConnection(isJoining = false) {
             }
         });
 
+        // Listen for remote ICE candidates
         onSnapshot(answerCandidates, snapshot => {
             snapshot.docChanges().forEach(change => {
                 if (change.type === 'added') {
@@ -156,61 +106,67 @@ async function setupPeerConnection(isJoining = false) {
                 }
             });
         });
-    }
 
-    // Setup chat
-    onSnapshot(doc(firestore, 'calls', roomId), snapshot => {
-        const data = snapshot.data();
-        if (data && data.messages) {
-            displayChatMessage(data.messages[data.messages.length - 1]);
-        }
-    });
+        alert(`Call started. Share this ID with the person you want to join: ${roomId}`);
+    } catch (error) {
+        console.error('Error starting call.', error);
+        alert('Error starting call: ' + error.message);
+    }
 }
 
-function toggleAudio() {
-    localStream.getAudioTracks().forEach(track => track.enabled = !track.enabled);
-    muteAudioButton.textContent = localStream.getAudioTracks()[0].enabled ? 'Mute Audio' : 'Unmute Audio';
-}
+async function joinCall() {
+    try {
+        // Join an existing call
+        roomId = prompt('Enter the ID of the call you want to join:');
+        const callDoc = doc(collection(firestore, 'calls'), roomId);
+        const offerCandidates = collection(callDoc, 'offerCandidates');
+        const answerCandidates = collection(callDoc, 'answerCandidates');
 
-function toggleVideo() {
-    localStream.getVideoTracks().forEach(track => track.enabled = !track.enabled);
-    muteVideoButton.textContent = localStream.getVideoTracks()[0].enabled ? 'Mute Video' : 'Unmute Video';
-}
+        peerConnection = new RTCPeerConnection(servers);
 
-async function endCall() {
-    if (peerConnection) {
-        peerConnection.close();
-    }
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-    }
-    if (remoteStream) {
-        remoteStream.getTracks().forEach(track => track.stop());
-    }
-    if (roomId) {
-        await deleteDoc(doc(firestore, 'calls', roomId));
-    }
-    localVideo.srcObject = null;
-    remoteVideo.srcObject = null;
-    alert('Call ended');
-}
+        // Add local stream tracks to the peer connection
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-async function sendMessage() {
-    if (!roomId) return;
-    const message = chatInput.value.trim();
-    if (message) {
-        const callDoc = doc(firestore, 'calls', roomId);
+        // Handle remote stream
+        peerConnection.ontrack = event => {
+            [remoteStream] = event.streams;
+            console.log('Remote stream received:', remoteStream);
+            remoteVideo.srcObject = remoteStream;
+        };
+
+        // Collect ICE candidates
+        peerConnection.onicecandidate = event => {
+            if (event.candidate) {
+                addDoc(answerCandidates, event.candidate.toJSON());
+            }
+        };
+
+        // Get offer
         const callData = (await getDoc(callDoc)).data();
-        const messages = callData.messages || [];
-        messages.push({ text: message, sender: 'You', timestamp: new Date().toISOString() });
-        await updateDoc(callDoc, { messages });
-        chatInput.value = '';
-    }
-}
+        const offerDescription = callData.offer;
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offerDescription));
 
-function displayChatMessage(message) {
-    const messageElement = document.createElement('div');
-    messageElement.textContent = `${message.sender}: ${message.text}`;
-    chatMessages.appendChild(messageElement);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+        // Create answer
+        const answerDescription = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answerDescription);
+
+        const answer = {
+            sdp: answerDescription.sdp,
+            type: answerDescription.type
+        };
+        await updateDoc(callDoc, { answer });
+
+        // Listen for remote ICE candidates
+        onSnapshot(offerCandidates, snapshot => {
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    const candidate = new RTCIceCandidate(change.doc.data());
+                    peerConnection.addIceCandidate(candidate);
+                }
+            });
+        });
+    } catch (error) {
+        console.error('Error joining call.', error);
+        alert('Error joining call: ' + error.message);
+    }
 }
