@@ -26,6 +26,9 @@ const startButton = document.getElementById('startButton');
 const joinButton = document.getElementById('joinButton');
 const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');
+const muteAudioButton = document.getElementById('muteAudioBtn');
+const muteVideoButton = document.getElementById('muteVideoBtn');
+const endCallButton = document.getElementById('endCallBtn');
 
 let localStream;
 let remoteStream;
@@ -34,6 +37,9 @@ let roomId;
 
 startButton.onclick = startCall;
 joinButton.onclick = joinCall;
+muteAudioButton.onclick = toggleAudio;
+muteVideoButton.onclick = toggleVideo;
+endCallButton.onclick = endCall;
 
 async function init() {
     try {
@@ -169,4 +175,43 @@ async function joinCall() {
         console.error('Error joining call.', error);
         alert('Error joining call: ' + error.message);
     }
+}
+
+function toggleAudio() {
+    if (localStream) {
+        const audioTrack = localStream.getAudioTracks()[0];
+        if (audioTrack) {
+            audioTrack.enabled = !audioTrack.enabled;
+            muteAudioButton.textContent = audioTrack.enabled ? 'Mute Audio' : 'Unmute Audio';
+        }
+    }
+}
+
+function toggleVideo() {
+    if (localStream) {
+        const videoTrack = localStream.getVideoTracks()[0];
+        if (videoTrack) {
+            videoTrack.enabled = !videoTrack.enabled;
+            muteVideoButton.textContent = videoTrack.enabled ? 'Mute Video' : 'Unmute Video';
+        }
+    }
+}
+
+async function endCall() {
+    if (peerConnection) {
+        peerConnection.close();
+    }
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+    }
+    localVideo.srcObject = null;
+    remoteVideo.srcObject = null;
+    if (roomId) {
+        try {
+            await deleteDoc(doc(firestore, 'calls', roomId));
+        } catch (error) {
+            console.error('Error deleting room document:', error);
+        }
+    }
+    alert('Call ended');
 }
